@@ -1,0 +1,7 @@
+---
+title: "Introducción"
+author: "Pablo Chica González"
+format: html
+---
+
+En este proyecto, nuestro objetivo será explorar patrones en el proceso de compra de vehículos para la compañía Mercedes-Benz.

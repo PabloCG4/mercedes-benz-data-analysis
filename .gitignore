@@ -1,0 +1,11 @@
+data/
+datasets/
+.Rproj.user/
+.quarto/
+_book/
+.RData
+.RDataTmp
+.Rhistory
+cover.png
+index.tex
+references.bib

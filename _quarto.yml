@@ -1,0 +1,25 @@
+project:
+  type: book
+
+book:
+  title: "Análisis de comportamiento de compra de vehículos"
+  author: "Pablo Chica González"
+  date: "05/17/2025"
+  chapters:
+    - index.qmd
+    - analisis-exploratorio.qmd
+    - planteamiento-preguntas.qmd
+    - variables-objetivo.qmd
+    - Uso-de-IA.qmd
+    - Conclusiones y propuestas.qmd
+
+bibliography: references.bib
+
+format:
+  html:
+    theme: cosmo
+  pdf:
+    documentclass: scrreprt
+
+editor: visual
+

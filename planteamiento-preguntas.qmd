@@ -1,0 +1,207 @@
+---
+title: "Planteamiento de preguntas"
+format: html
+---
+
+```{r, results='hide'}
+library(readr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(lubridate)
+
+# Leer los datasets modificados
+wishlist <- read_csv("data/wishlist1_modificado.csv")
+customer_vehicle <- read_csv("data/customer_vehicle1_modificado.csv")
+vehicle <- read_csv("data/vehicle1_modificado.csv")
+damage <- read_csv("data/damage1_modificado.csv")
+```
+
+Ahora que hemos analizado los datasets uno por uno, nos surgen preguntas que necesitan de varios datasets con facilidad, como por ejemplo:
+
+## ¿Qué relación hay entre añadir un vehículo a la wishlist y acabar comprando un vehículo?
+
+Queremos ver el tiempo que pasa hasta la proxima compra de cada cliente después de crear su wishlist.
+
+```{r}
+class(wishlist$wish_create_date)
+```
+
+Vamos a convertir primero las fechas a tipo Date para trabajar mejor con ellas:
+
+```{r}
+wishlist <- wishlist |>
+  mutate(wish_create_date = ymd(wish_create_date))
+
+customer_vehicle <- customer_vehicle |>
+  mutate(valid_from = ymd(valid_from))
+```
+
+Ahora pasamos a combinar los datasets por el customer_id:
+
+```{r}
+wishlist_vs_compras <- wishlist |>
+  select(customer_id, wish_create_date) |>
+  #IA
+  inner_join(customer_vehicle |> select(customer_id, valid_from), by = "customer_id") |>
+  filter(valid_from >= wish_create_date) |> 
+  
+  mutate(dias_hasta_compra = as.numeric((valid_from- wish_create_date))) |>
+  group_by(customer_id, wish_create_date) |>
+  summarise(dias_hasta_compra = min(dias_hasta_compra))
+summary(wishlist_vs_compras$dias_hasta_compra)
+```
+
+Como puede que un mismo cliente tenga varias wishlists, o haya realizado varias compras, buscamos el valor mínimo de días hasta la próxima compra. Como podemos observar, el resumen estadístico que hemos creado nos proporciona mucha información, por ejemplo, que hay clientes que compran el coche el mismo día que lo añaden a la wishlist, o que el tiempo más largo es de 126 días. Sin embargo, podemos crear un gráfico para verlo de forma más clara:
+
+```{r}
+library(ggplot2)
+ggplot(wishlist_vs_compras, aes(x = dias_hasta_compra)) +
+  #IA
+  geom_histogram(binwidth = 10, fill = "blue", color = "white") +
+  labs(
+    title = "Días hasta la compra después de crear wishlist",
+    x = "Días hasta compra",
+    y = "Número de clientes"
+  ) 
+```
+
+Aquí vemos la alta relación que existe entre añadir un vehículo a la lista de deseos y el tiempo que pasa hasta la próxima compra.
+
+Para profundizar un poco más en esta relación, podemos calcular el porcentaje de clientes que aún habiendo creado una wishlist, no llegan a vincularse con ningún vehículo.
+
+```{r}
+library(dplyr)
+
+clientes_con_wishlist <- wishlist |>
+  distinct(customer_id)
+clientes_con_wishlist
+
+clientes_con_vehiculo <- customer_vehicle |>
+  distinct(customer_id)
+clientes_con_vehiculo
+
+
+clientes_sin_vehiculo <- clientes_con_wishlist |>
+  filter(!(customer_id %in% clientes_con_vehiculo$customer_id))
+clientes_sin_vehiculo
+
+porcentaje_no_compran <- nrow(clientes_sin_vehiculo) / nrow(clientes_con_wishlist) * 100
+porcentaje_no_compran
+
+```
+
+Como vemos, el porcentaje es 0%, por lo que existe una relación directa entre añadir un vehículo a la lista de deseos y acabar comprando uno, pero, es el mismo vehículo que se añade a la lista el que se acaba comprando?
+
+```{r, results='hide'}
+wishlist <- wishlist |>
+  mutate(wish_create_date = ymd(wish_create_date))
+
+customer_vehicle <- customer_vehicle |>
+  mutate(valid_from = ymd(valid_from))
+
+# Unimos customer_vehicle con vehicle_data para obtener baumuster de la compra
+vehiculos_comprados <- customer_vehicle |>
+  inner_join(vehicle |> select(vehicle_id, baumuster_6), by = "vehicle_id")
+
+```
+
+```{r, results='hide'}
+# Ahora cruzamos wishlist con vehículos comprados del mismo cliente, posterior a la wishlist
+comparacion <- wishlist |>
+  select(customer_id, baumuster_wish = baumuster, wish_create_date) |>
+  inner_join(vehiculos_comprados |> select(customer_id, baumuster_6, valid_from), 
+             by = "customer_id") |>
+  filter(valid_from >= wish_create_date)
+
+```
+
+```{r}
+comparacion <- comparacion |>
+  mutate(baumuster_wish_6 = substr(baumuster_wish, 1, 6)) |>
+  mutate(mismo_modelo = baumuster_wish_6 == baumuster_6)
+
+comparacion_final <- comparacion |>
+  group_by(customer_id, wish_create_date) |>
+  summarise(mismo_modelo = any(mismo_modelo), .groups = "drop")
+
+porcentaje_mismo_modelo <- mean(comparacion_final$mismo_modelo) * 100
+porcentaje_mismo_modelo
+```
+
+Con esto observamos que el 41% de los clientes compró el vehículo con el mismo baumuster_6 que el que añadió a su wishlist.
+
+## ¿Qué tienen en cuenta los clientes a la hora de comprar un vehículo?
+
+Para resolver esta pregunta, nos surge otra: ¿Existe una relación entre la cantidad de reparaciones realizadas a un vehículo y el tipo de vehículo (por ejemplo, largo, tipo de carrocería, etc.) que es?
+
+Una vez resolvamos esta pregunta, podremos encontrar patrones en los tipos de vehículos que más reparaciones tienen, para posteriormente comprobar si eso influye en el cliente a la hora de elegir un vehículo.
+
+```{r}
+repair_count <- damage |>
+  group_by(vehicle_id) |>
+  summarise(repair_count = n())
+
+vehicle_repair_data <- repair_count |>
+  inner_join(vehicle, by = "vehicle_id") |>
+  select(vehicle_type, repair_count, altura_clasificada, longitud_clasificada, anchura_clasificada) |>
+  arrange(desc(repair_count))
+head(vehicle_repair_data)
+```
+
+Como vemos, realmente las dimensiones del vehículo no parecen tener relación con el número de reparaciones, por lo que descartamos esto.
+
+No hemos tenido en cuenta que si un vehículo es muy comprado, es normal que ese vehículo vaya al taller con más frecuencia. Por tanto, vamos ahora a calcular la relación entre el número de compras y el número de reparaciones de cada vehículo, lo cual nos puede dar información más útil:
+
+```{r}
+purchase_count <- customer_vehicle |>
+  group_by(vehicle_id) |>
+  summarise(purchase_count = n())
+
+repair_count <- damage |>
+  group_by(vehicle_id) |>
+  summarise(repair_count = n())
+
+vehicle_analysis <- purchase_count |>
+  inner_join(repair_count, by = "vehicle_id")|>
+  arrange(desc(purchase_count))
+head(vehicle_analysis)
+```
+
+Como observamos, los vehículos más comprados no suelen tener muchas reparaciones, lo cual puede ser un indicador de que los clientes buscan coches que no requieran un gran mantenimiento.
+
+```{r}
+vehicle_analysis <- purchase_count |>
+  inner_join(repair_count, by = "vehicle_id")|>
+  arrange(desc(repair_count))
+head(vehicle_analysis)
+```
+
+Aquí vemos que los vehículos con más reparaciones no son apenas comprados, reafirmando nuestra deducción.
+
+Ya sabemos que no hay relación entre reparaciones y tipo de vehículo, pero sí entre reparaciones por compra para vehículos específicos. Por tanto, podemos preguntarnos si aún así los clientes optan por algún tipo de vehículo en específico y por qué.
+
+```{r, results='hide'}
+compras_vehiculos <- customer_vehicle |>
+  inner_join(vehicle, by = "vehicle_id")
+```
+
+```{r}
+compras_por_forma <- compras_vehiculos |>
+  group_by(class_bodytype, altura_clasificada, longitud_clasificada, anchura_clasificada) |>
+  summarise(n = n()) |>
+  arrange(desc(n))
+tail(compras_por_forma,30)
+```
+
+Con estos resultados, sí que parece que los vehículos menos comprados son aquellos con una longitud mediana-grande, una altura pequeña y una anchura mediana, lo cual puede ser un indicador de que los clientes buscan coches no muy largos y altos, quizás para una mayor comodidad. ¿Podríamos decir entonces que los clientes priorizan la comodidad a la hora de elegir un coche? Sin embargo, también habría que tener en cuenta otros factores que desconocemos, como el precio, o el número de vehículos que salen a la venta de ese tipo...
+
+```{r, results='hide'}
+library(readr)
+
+write_csv(wishlist, "data/wishlist2_modificado.csv")
+write_csv(customer_vehicle, "data/customer_vehicle2_modificado.csv")
+write_csv(vehicle, "data/vehicle2_modificado.csv")
+write_csv(damage, "data/damage2_modificado.csv")
+
+```

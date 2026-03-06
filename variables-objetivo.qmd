@@ -1,0 +1,330 @@
+---
+title: "Resolución del objetivo"
+format: html
+---
+
+```{r, results='hide'}
+library(readr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(lubridate)
+
+# Leer los datasets modificados
+wishlist <- read_csv("data/wishlist2_modificado.csv")
+customer_vehicle <- read_csv("data/customer_vehicle2_modificado.csv")
+vehicle <- read_csv("data/vehicle2_modificado.csv")
+damage <- read_csv("data/damage2_modificado.csv")
+```
+
+## Combinación de tablas
+
+Vamos a calcular el numero de veces que un cliente ha visitado el taller.
+
+```{r}
+library(dplyr)
+
+damage <- damage |>
+  group_by(customer_id, vehicle_id) |>
+  mutate(total_workshop_visits = n()) |>
+  ungroup() 
+```
+
+Ahora, unimos esta información con el dataset customer_vehicle, eliminando duplicados. Con esto, obtenemos el número de veces que un cliente ha visitado el taller para cada vehículo que posee. Vamos a crear un gráfico con esta información para verla mejor, seccionando las visitas en rangos.
+
+```{r}
+library(dplyr)
+
+damage_aggregated <- damage |>
+  group_by(customer_id, vehicle_id) |>
+  mutate(total_workshop_visits = n()) |>
+  distinct(customer_id, vehicle_id, total_workshop_visits)
+
+customer_vehicle <- customer_vehicle |>
+  left_join(damage_aggregated, by = c("customer_id", "vehicle_id"))
+
+
+customer_vehicle <- customer_vehicle |>  mutate(total_workshop_visits = if_else(is.na(total_workshop_visits), 0, total_workshop_visits))
+
+# Crear tabla con los recuentos por categoría
+category_counts <- customer_vehicle |>
+  filter(!is.na(total_workshop_visits)) |>
+  mutate(category = case_when(
+    total_workshop_visits < 5 ~ "<5 visitas",
+    total_workshop_visits >= 5 & total_workshop_visits <= 10 ~ "5-10 visitas",
+    total_workshop_visits > 10 & total_workshop_visits <= 20 ~ "11-20 visitas",
+    total_workshop_visits > 20 ~ ">20 visitas"
+  )) |>
+  count(category) |>
+  mutate(percentage = round(100 * n / sum(n), 1))
+
+# Crear gráfico circular con porcentajes
+ggplot(category_counts, aes(x = "", y = n, fill = category)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar("y") +
+  labs(
+    title = "Distribución de visitas al taller por vehículo",
+    fill = "Categoría"
+  ) 
+
+```
+
+Ahora vamos a agrupar los kilometrajes de los vehículos en diferentes rangos, para luego añadir la columna a vehicle_data.
+
+```{r}
+library(dplyr)
+
+damage_categorized <- damage |>
+  mutate(damage_mileage_category = case_when(
+    damage_mileage <= 10000 ~ "Muy bajo",
+    damage_mileage <= 30000 ~ "Bajo",
+    damage_mileage <= 60000 ~ "Medio",
+    damage_mileage <= 100000 ~ "Alto",
+    damage_mileage > 100000 ~ "Muy alto",
+    TRUE ~ NA_character_
+  )) |>
+  group_by(customer_id, vehicle_id) |>
+  slice(1) |>
+  select(customer_id, vehicle_id, damage_mileage_category)
+
+customer_vehicle <- customer_vehicle |>
+  left_join(damage_categorized, by = c("customer_id", "vehicle_id"))
+
+
+```
+
+## Variables objetivo
+
+Vamos ahora a crear las variables objetivo. Empezaremos con time_until_next_purchase. Para ello tenemos que crear primero next_purchase_date.
+
+```{r}
+library(dplyr)
+customer_vehicle <- customer_vehicle |>
+  mutate(next_repurchase_date = ifelse(!is.na(valid_to), valid_to, NA))
+```
+
+Ahora creamos la variable time_until_next_purchase.
+
+```{r}
+customer_vehicle <- customer_vehicle |>
+  mutate(
+    valid_from = as.Date(valid_from),
+    next_repurchase_date = as.Date(next_repurchase_date)
+  ) |>
+  mutate(
+    # Calcular la diferencia en días y luego convertir a meses, truncando los valores
+    time_until_next_purchase = trunc(as.numeric(difftime(next_repurchase_date, valid_from, units = "days")) / 30
+  ))
+
+```
+
+Una vez tenemos esto, ahora el objetivo es predecir los valores faltantes.
+
+Para ello, primero vamos a crear una nueva columna en customer_vehicle, en la que solo aparezca las fechas wish_update_date de los clientes que han actualizado su wishlist con un wish_type="STOCK", pues nos interesan los clientes que hayan añadido un vehículo a su lista de deseos.
+
+```{r}
+library(dplyr)
+wishlist_stock <- wishlist |>
+  filter(wish_type == "STOCK") |>
+  select(customer_id, wish_update_date)
+
+wishlist_stock_latest <- wishlist_stock |>
+  group_by(customer_id) |>
+  summarise(last_stock_update = max(wish_update_date, na.rm = TRUE), .groups = "drop")
+
+customer_vehicle$customer_id <- as.character(customer_vehicle$customer_id)
+wishlist_stock_latest$customer_id <- as.character(wishlist_stock_latest$customer_id)
+
+customer_vehicle <- customer_vehicle |>
+  left_join(wishlist_stock_latest, by = "customer_id")
+
+```
+
+Vemos que hay muchos valores faltantes. En concreto, el número de valores no nulos es:
+
+```{r}
+sum(!is.na(customer_vehicle$last_stock_update))
+```
+
+Sin embargo, estos valores, aunque sean pocos, nos pueden ser muy útiles para determinar la próxima fecha de compra, por lo que los podemos mantener.
+
+Ahora, con esta información, podemos estimar los valores faltantes de next_purchase_date.
+
+Como vimos en la pregunta 1, el tiempo que pasa entre la última actualización de la wishlist y la compra de un vehículo es corto. Vamos a suponer que es de un mes.
+
+```{r}
+customer_vehicle <- customer_vehicle |>
+  mutate(
+    next_repurchase_date = as.Date(next_repurchase_date), 
+    next_repurchase_date = if_else(
+      is.na(next_repurchase_date) & !is.na(last_stock_update),
+      #IA
+      last_stock_update %m+% months(1),
+      next_repurchase_date
+    ),
+    time_until_next_purchase = if_else(
+      is.na(time_until_next_purchase) & !is.na(last_stock_update),
+      1,
+      time_until_next_purchase
+    )
+  )
+```
+
+Ahora, para los diferentes rangos de visitas al taller y diferentes rangos de kilometraje, vamos a predecir los valores faltantes. Para ello, tomamos como punto de partida la columna valid_from y creamos una nueva variable en la que encontraremos las fechas que vamos a predecir.
+
+```{r}
+library(dplyr)
+library(lubridate)
+
+missing_next_purchase <- customer_vehicle |>
+  filter(is.na(next_repurchase_date))
+
+customer_vehicle <- customer_vehicle |>
+  mutate(valid_from = as.Date(valid_from),
+         time_until_next_purchase = as.numeric(time_until_next_purchase))
+
+modelo_regresion <- lm(time_until_next_purchase ~ total_workshop_visits + damage_mileage_category, data = customer_vehicle)
+
+#Predecir los valores faltantes
+predicted_values <- predict(modelo_regresion, newdata = missing_next_purchase)
+
+missing_next_purchase <- missing_next_purchase |>
+  mutate(
+    predicted_time_until_next_purchase = predicted_values,
+    predicted_next_repurchase_date = valid_from + predicted_values
+  )
+
+#Reemplazar solo los valores faltantes en next_repurchase_date con los predichos
+customer_vehicle <- customer_vehicle |>
+  left_join(missing_next_purchase |> select(customer_id, vehicle_id, predicted_next_repurchase_date),
+            by = c("customer_id", "vehicle_id")) |>
+  mutate(next_repurchase_date = if_else(is.na(next_repurchase_date), predicted_next_repurchase_date, next_repurchase_date))
+```
+
+Ahora unimos las dos columnas.
+
+```{r}
+customer_vehicle <- customer_vehicle |>
+  mutate(
+    next_repurchase_date = if_else(
+      is.na(next_repurchase_date),
+      predicted_next_repurchase_date,
+      next_repurchase_date
+    )
+  )
+```
+
+Y ahora volvemos a calcular time_until_next_purchase:
+
+```{r}
+customer_vehicle$time_until_next_purchase <- NULL
+
+customer_vehicle <- customer_vehicle |>
+  mutate(
+    valid_from = as.Date(valid_from),
+    next_repurchase_date = as.Date(next_repurchase_date)
+  ) |>
+  mutate(
+    time_until_next_purchase = trunc(as.numeric(difftime(next_repurchase_date, valid_from, units = "days")) / 30
+  ))
+```
+
+Vamos a extraer conclusiones del modelo.
+
+```{r}
+summary(modelo_regresion)
+```
+
+El F-statistic nos muestra que el modelo es estadísticamente significativo en su conjunto. Es decir, al menos una de las variables predice significativamente time_until_next_purchase.
+
+El Residual standard error alto nos indica que hay bastante dispersión, por lo que las predicciones no son muy precisas.
+
+Si observamos los coeficientes, vemos que todos son significativosl lo cual es importante.
+
+El R\^2 nos indica que el modelo no captura bien el comportamiento completo del target.
+
+Vamos ahora con la variable objetivo next_class_bodytype. Primero añadimos class_bodytype a customer_vehicle.
+
+```{r, results='hide'}
+customer_vehicle <- customer_vehicle |>
+  left_join(vehicle |> select(vehicle_id, class_bodytype),
+            by = "vehicle_id")
+```
+
+Ahora creamos next_class_bodytype de forma similar a como creamos next_repurchase_date.
+
+```{r}
+customer_vehicle <- customer_vehicle |>
+  arrange(customer_id, valid_from) |>
+  group_by(customer_id) |>
+  #IA
+  mutate(
+    next_class_bodytype = lead(class_bodytype)  # Tomamos la siguiente carrocería dentro del cliente
+  )
+```
+
+Ahora, para predecir el next_class_bodytype, usaremos información que hemos extraido anteriormente, en concreto las medidas clasificadas por rango, para ver las preferencias de los clientes uno a uno. Antes lo hicimos en general, al resolver la pregunta 4. Para ello, combinamos las medidas clasificadas con el dataset customer_vehicle.
+
+```{r, results='hide'}
+library(dplyr)
+
+customer_vehicle <- customer_vehicle |>
+  left_join(vehicle |>
+              select(vehicle_id, altura_clasificada, longitud_clasificada, anchura_clasificada),
+            by = "vehicle_id")
+```
+
+No podemos usar regresión lineal, por lo que usaremos regresión rpart. #IA
+
+```{r}
+library(rpart)
+
+train_data <- customer_vehicle |>
+  filter(!is.na(next_class_bodytype)) |>
+  mutate(
+    next_class_bodytype = factor(next_class_bodytype),
+    damage_mileage_category = factor(damage_mileage_category),
+    altura_clasificada = factor(altura_clasificada),
+    longitud_clasificada = factor(longitud_clasificada),
+    anchura_clasificada = factor(anchura_clasificada)
+  )
+
+modelo_rpart <- rpart(
+  next_class_bodytype ~ altura_clasificada + longitud_clasificada + anchura_clasificada +
+    damage_mileage_category + total_workshop_visits,
+  data = train_data,
+  method = "class"
+)
+
+test_data <- customer_vehicle |>
+  filter(is.na(next_class_bodytype)) |>
+  mutate(
+    damage_mileage_category = factor(damage_mileage_category, levels = levels(train_data$damage_mileage_category)),
+    altura_clasificada = factor(altura_clasificada, levels = levels(train_data$altura_clasificada)),
+    longitud_clasificada = factor(longitud_clasificada, levels = levels(train_data$longitud_clasificada)),
+    anchura_clasificada = factor(anchura_clasificada, levels = levels(train_data$anchura_clasificada))
+  )
+
+predicciones <- predict(modelo_rpart, newdata = test_data, type = "class")
+
+customer_vehicle$next_class_bodytype[is.na(customer_vehicle$next_class_bodytype)] <- as.character(predicciones)
+```
+
+Vamos ahora a estudiar un poco el modelo.
+
+```{r}
+modelo_rpart$variable.importance
+```
+
+Como vemos, total_workshop_visits no contribuyó apenas en la mejora de la calidad del árbol de decisión al dividir los datos. También observamos que, comparada con las otras dos, la longitud fue menos significante.
+
+```{r, results='hide'}
+library(readr)
+
+# Guardar los datasets modificados
+write_csv(wishlist, "data/wishlist3_modificado.csv")
+write_csv(customer_vehicle, "data/customer_vehicle3_modificado.csv")
+write_csv(vehicle, "data/vehicle3_modificado.csv")
+write_csv(damage, "data/damage3_modificado.csv")
+
+```

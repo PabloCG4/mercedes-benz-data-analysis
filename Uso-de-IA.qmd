@@ -1,0 +1,134 @@
+---
+title: "Uso de IA"
+format: html
+---
+
+En esta pestaña explicaremos un poco el uso que le hemos dado a la IA y cómo. Esencialmente fue usada para casos aislados, como ...
+
+Cabe destacar que en el código está señalado con "#IA" todo fragmento en el que fue usada. En concreto usé ChatGPT. Sin embargo, para tratar un poco más en profundidad su uso, lo dividiremos en los apartados en los que hemos dividido el proyecto.
+
+## Análisis exploratorio
+
+Fue útil para modificar el nombre con el que se indicaban los países. \*Pregunta: Observando los datos, nos damos cuenta de que en el dataset whishlist, los países tienen un nombre poco intuitivo (ej: de_DE para referirse a Alemania, pt_PT, it_IT y nl_NL). Quiero que elimines el \_ y todo lo de antes a el \_.
+
+```{r,eval=FALSE}
+wishlist <- wishlist |>
+  #IA
+  mutate(market = str_replace(market, ".*_", ""))
+```
+
+También lo usé para obtener en formato fecha algunos datos. \*Pregunta: ¿Cómo obtengo el mes de una fecha?
+
+```{r,eval=FALSE}
+  #IA
+  mutate(wish_month = month(ymd(wish_create_date)))
+```
+
+Además, para algunas funciones de ggplot2, como scale_x_continuous. \*Pregunta: ¿Cómo puedo personalizar el eje X en un gráfico de barras para que muestre los nombres de los meses en lugar de los números?
+
+```{r,eval=FALSE}
+wishlist |>
+  mutate(wish_month = month(ymd(wish_create_date))) |>
+  count(wish_month) |>
+  ggplot(aes(x = wish_month, y = n)) +
+  geom_col(fill = "blue") +
+  #IA
+  scale_x_continuous(breaks = 1:12, labels = c("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic")) +
+  labs(
+    title = "Número de vehículos por mes (Portugal)",
+    x = "Mes",
+    y = "Número de vehículos"
+  )
+```
+
+O para que me crease un gráfico circular. \*Pregunta: "Tengo un gráfico de barras que muestra la cantidad de clientes por rol. ¿Cómo puedo transformarlo en un gráfico circular en ggplot2?"
+
+```{r,eval=FALSE}
+customer_vehicle |>
+  count(role) |>
+  ggplot(aes(x = role, y = n)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Número de clientes por rol", x = "Rol", y = "Cantidad")
+  
+customer_vehicle |>
+  count(role) |>
+  #IA
+  ggplot(aes(x = "", y = n, fill = role)) + 
+  geom_col(width = 1) +
+  coord_polar(theta = "y") + # Para hacer el gráfico circular
+  labs(title = "Distribución de roles de clientes")
+```
+
+Por último, no sabía como dividir número es rangos teniendo en cuenta que los números eran de la forma "n1-n2", es decir, también rangos. \*Pregunta: "Tengo una variable height_range con valores como '1400-1600', '1800-2000', etc. Quiero crear una nueva columna llamada altura_clasificada que clasifique los vehículos así: Si el valor mínimo es ≤ 1500, es 'altura_pequeña' Si el mínimo es \>1500 y el máximo ≤2000, es 'altura_mediana' Si el máximo es \>2000, es 'altura_grande' ¿Me puedes ayudar con un case_when() para eso?"
+
+```{r,eval=FALSE}
+vehicle <- vehicle |>
+  mutate(
+    altura_clasificada = case_when(
+      #IA
+      as.numeric(sub("^(\\d+)-.*", "\\1", height_range)) <= 1500 ~ "altura_pequeña",
+      as.numeric(sub("^(\\d+)-.*", "\\1", height_range)) > 1500 & 
+      as.numeric(sub(".*-(\\d+)$", "\\1", height_range)) <= 2000 ~ "altura_mediana",
+      as.numeric(sub(".*-(\\d+)$", "\\1", height_range)) > 2000 ~ "altura_grande",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+## Planteamiento de preguntas
+
+En este apartado el uso de la IA fue escaso. Simplemente tuve que preguntarle cómo unir columnas de datasets distintos.
+
+```{r,eval=FALSE}
+  inner_join(customer_vehicle |> select(customer_id, valid_from), by = "customer_id")
+```
+
+y como hacer un gráfico de barras sin contar manualmente cuántas observaciones hay en cada intervalo.
+
+```{r,eval=FALSE}
+ggplot(wishlist_vs_compras, aes(x = dias_hasta_compra)) +
+  #IA
+  geom_histogram(binwidth = 10, fill = "blue", color = "white") +
+  labs(
+    title = "Días hasta la compra después de crear wishlist",
+    x = "Días hasta compra",
+    y = "Número de clientes"
+  ) 
+```
+
+## Resolución del objetivo
+
+Aquí también fue poco el uso, con preguntas como: ¿Cómo sumo 1 mes a cada valor de una columna de mi dataset?
+
+```{r,eval=FALSE}
+mutate(
+    next_repurchase_date = as.Date(next_repurchase_date), 
+    next_repurchase_date = if_else(
+      is.na(next_repurchase_date) & !is.na(last_stock_update),
+      #IA
+      last_stock_update %m+% months(1),
+      next_repurchase_date
+    ),
+```
+
+o ¿Cómo obtengo el siguiente valor de una columna?
+
+```{r,eval=FALSE}
+mutate(
+    next_class_bodytype = lead(class_bodytype)  # Tomamos la siguiente carrocería dentro del cliente
+  )
+```
+
+Además, me ayudó a crear un modelo de regresión para el next_class_bodytype, pues observé que el modelo de regresión lineal no se puede usar debido a que funciona con variables continuas, siendo class_bodytype una variable categórica.
+
+\*Pregunta: ¿Qué modelo de regresión puedo usar para la variable class_bodytype, y cuales serian los pasos a seguir?
+
+Para predecir la variable class_bodytype, que es una variable categórica, un buen modelo de regresión sería rpart...
+
+Pasos a seguir: 1.Preparación de los datos (convertir a factores)... 2.Entrenamiento del modelo... 3.Preparación de los datos de prueba... 4.Predicción... 5.Actualizar los datos con las predicciones...
+
+\*Pregunta: ¿Cómo obtengo información de este modelo de regresión?
+
+```{r,eval=FALSE}
+modelo_rpart$variable.importance
+```

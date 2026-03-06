@@ -1,0 +1,440 @@
+---
+title: "Análisis exploratorio y tratamiento de los datos"
+format: html
+---
+
+Lo primero que haremos será analizar los datos de los que disponemos uno a uno, para extraer conocimiento de ellos que nos ayude a entenderlos mejor de cara a plantear problemas posteriormente.
+
+## Análisis exploratorio de los datos
+
+Vamos primero a importar los datasets para poder analizarlos.
+
+```{r, results='hide'}
+vehicle <- read.csv("~/Laboratorio Computación/Proyecto Mercedes/bookMercedes/datasets/vehicle_data.csv")
+wishlist <- read.csv("~/Laboratorio Computación/Proyecto Mercedes/bookMercedes/datasets/wishlist_data.csv")
+customer_vehicle <- read.csv("~/Laboratorio Computación/Proyecto Mercedes/bookMercedes/datasets/customer_vehicle_data.csv")
+damage <- read.csv("~/Laboratorio Computación/Proyecto Mercedes/bookMercedes/datasets/damage_data.csv")
+```
+
+Observando los datos, nos damos cuenta de que en el dataset whishlist, los países tienen un nombre poco intuitivo (ej: de_DE para referirse a Alemania).
+
+```{r, results='hide'}
+library(dplyr)
+library(stringr)
+wishlist <- wishlist |>
+  #IA
+  mutate(market = str_replace(market, ".*_", ""))
+```
+
+Ahora vamos a analizar los datasets de uno en uno.
+
+### Wishlist
+
+Vamos a extraer valores que en un futuro nos pueden servir, como por ejemplo el número de vehículos añadidos a la wishlist en cada mes.
+
+```{r, results='hide'}
+library(lubridate)
+library(ggplot2)
+wishlist |>
+  #IA
+  mutate(wish_month = month(ymd(wish_create_date))) |>
+  count(wish_month) |>
+  arrange(desc(n))
+  
+```
+
+Vamos a mostrarlo usando un gráfico de barras, para que se vea la evolución por meses.
+
+```{r}
+wishlist |>
+  mutate(wish_month = month(ymd(wish_create_date))) |>
+  count(wish_month) |>
+  ggplot(aes(x = wish_month, y = n)) +
+  geom_col(fill = "blue") +
+  #IA
+  scale_x_continuous(breaks = 1:12, labels = c("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic")) +
+  labs(
+    title = "Número de vehículos por mes (Portugal)",
+    x = "Mes",
+    y = "Número de vehículos"
+  )
+```
+
+Podemos observar que, en los primeros meses del año, los clientes crean más wishlist que en el resto de meses.
+
+Otro dato interesante a extraer sobre las wishlists puede ser la medida de persistencia del interés para cada coche, es decir, cuánto tiempo pasa cada coche en las listas de deseo. Para ello, calcularemos la diferencia entre la última actualización en la wishlist y la fecha de creación
+
+```{r}
+wishlist |>
+  mutate(
+    create_date = ymd(wish_create_date),
+    update_date = ymd(wish_update_date),
+    interest_days = as.numeric(update_date - create_date, units = "days")
+  ) |>
+  filter(!is.na(interest_days), interest_days >= 0) |>  # limpiar datos incorrectos
+  group_by(vehicle_name) |>
+  summarise(
+    mean_interest_days = mean(interest_days, na.rm = TRUE)
+  ) |>
+  arrange(desc(mean_interest_days))
+```
+
+Sin embargo, al hacer esto nos damos cuenta de que no proporciona información muy relevante, pues puede que el tiempo de interés sea alto pero para casos aislados (pocos usuarios han añadido ese vehículo a su wishlist). Por tanto, vamos a añadir el número de veces que cada vehículo se ha añadido a la lista.
+
+```{r}
+wishlist |>
+  mutate(
+    create_date = ymd(wish_create_date),
+    update_date = ymd(wish_update_date),
+    interest_days = as.numeric(update_date - create_date, units = "days")
+  ) |>
+  filter(!is.na(interest_days), interest_days >= 0) |>
+  group_by(vehicle_name) |>
+  summarise(
+    mean_interest_days = mean(interest_days, na.rm = TRUE),
+    num_entries = n()
+    ) |>
+  arrange(desc(num_entries))
+
+```
+
+Ahora sí, podemos observar por ejemplo que el modelo Mercedes-AMG GT 63 S E PERFORMANCE Coupé, es añadido 19 veces a la lista y actualizada durante bastante tiempo de media.
+
+### Damage
+
+Vamos a empezar extrayendo datos básicos que nos ayuden a entender un poco mejor el dataset.
+
+Número de reparaciones por tipo de reparación
+
+```{r}
+damage |>
+  group_by(damage_type_description) |>
+  summarise(num_reparaciones = n()) |>
+  arrange(desc(num_reparaciones))
+```
+
+Podemos ver que Service contract es el tipo de reparación más frecuente, lo cual es lógico, además de buena señal, ya que se trata de servicios relacionados con el mantenimiento del vehículo.
+
+Vamos ahora a ordenar por meses, para ver cuáles son los meses en los que más reparaciones se realizan. Lo mostramos en un gráfico de barras.
+
+```{r}
+damage |>
+  mutate(damage_repair_month = month(ymd(damage_repair_date))) |>
+  group_by(damage_repair_month) |>
+  summarise(num_reparaciones = n()) |>
+  arrange(damage_repair_month) |>
+  ggplot(aes(x = damage_repair_month, y = num_reparaciones)) +
+  geom_col( fill = "blue") +
+  labs(
+    title = "Número de Reparaciones por Mes",
+    x = "Mes de Reparación",
+    y = "Número de Reparaciones"
+  ) +
+  scale_x_continuous(breaks = 1:12, labels = c("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic")) 
+```
+
+Podemos observar que a diferencia de en el dataset wishlist, en este no hay una relación clara entre el mes de reparación y el número de reparaciones.
+
+Ahora vamos a usar reglas de asociación, tratando cada visita al taller como una transacción en la que los items son el tipo de daño, el servicio realizado y la categoría del coste. Generamos reglas de asociación que nos ayuden a identificar, por ejemplo: Tipo de daños asociados a reparaciones de coste alto
+
+```{r, results='hide'}
+library(arules)
+```
+
+```{r}
+damage_coste_alto <- damage |>
+  filter(repair_cost_category == "High cost") |>
+  select(damage_type_description, repair_cost_category)
+transactions <- as(damage_coste_alto, "transactions")
+
+reglas <- apriori(transactions, parameter = list(supp = 0.01, conf = 0.5))
+
+inspect(reglas[3])
+```
+
+Observamos que la regla 3 nos indica que cada vez que haya un daño por "Internal leakage", la reparación será de alto coste, pues su confianza=1. Además podemos observar que esto ocurre 7174 veces en nuestro dataset, lo cual nos indica que no es una reparación muy frecuente, visible además en que el soporte es de 0.01160903 (1.16% de las transacciones).
+
+Podemos observar también el tipo de servicio que se realiza habitualmente después de un tipo de daño específico.
+
+```{r}
+damage_service <- damage |>
+  select(damage_type_description, service_type_description)
+transactions_service <- as(damage_service, "transactions")
+
+reglas <- apriori(transactions_service, parameter = list(supp = 0.01, conf = 0.5))
+
+inspect(sort(reglas,by="confidence"))
+```
+
+Observamos con la regla 1 que el 93% de las veces, cuando el tipo de daño es "Replacement vehicle", el servicio ofrecido es "Mobility".
+
+### Customer vehicle
+
+Vamos primero con algo básico, observar el porcentaje de clientes con cada tipo de rol.
+
+```{r}
+library(ggplot2)
+customer_vehicle |>
+  count(role) |>
+  #IA
+  ggplot(aes(x = "", y = n, fill = role)) + 
+  geom_col(width = 1) +
+  coord_polar(theta = "y") + # Para hacer el gráfico circular
+  labs(title = "Distribución de roles de clientes")
+```
+
+Como vemos, la mayoría de los clientes tienen el rol de propietario. También vemos un alto porcentaje del rol "Legacy", por lo que vamos a ver a qué se refiere este rol.
+
+```{r}
+legacy <- customer_vehicle |>
+  filter(role=="LEGACY") |>
+  select(valid_from, valid_to, role)
+head(legacy)
+```
+
+No encontramos un patrón claro, por lo que no podemos concluir nada útil acerca de este rol.
+
+Comprobamos de que tipo son los valores valid_to:
+
+```{r}
+head(customer_vehicle$valid_to)
+```
+
+Ahora ya sabemos como tratar sus valores vacíos:
+
+```{r}
+valid_to_vacio <- customer_vehicle |>
+  summarise(
+    total = n(),
+    vacio_valid_to = sum(valid_to==""),
+    porc_vacio_valid_to = (vacio_valid_to / total) * 100
+  )
+valid_to_vacio
+
+```
+
+Vemos que el porcentaje de valores valid_to vacíos es alto, lo cual puede indicar que simplemente el cliente sigue siendo dueño del vehículo y no se ha añadido todavía fecha límite, o en el caso de los que tienen el rol "Legacy", que ya ha expirado su fecha.
+
+Seguimos buscando valores erróneos en el dataset, ahora buscando fechas "valid_from" que sean posteriores a su respectivo "valid_to".
+
+```{r}
+fechas_invalidas <- customer_vehicle |>
+  filter(valid_from > valid_to, !valid_to=="") 
+fechas_invalidas
+```
+
+No hay valores mayores de "valid_from".
+
+### Vehicle
+
+Primero, vamos a clasificar los vehículos según su longitud en vehículos cortos, medianos o largos.
+
+```{r}
+medidas <- vehicle |>
+  select(height_range)|>
+  distinct() |>
+  arrange(desc(height_range))
+head(medidas)
+tail(medidas)
+```
+
+Vemos que el valor mínimo es 1256 y el máximo 2706. Por tanto, vamos a dividir estos valores en tres rangos: alto, mediano y pequeño:
+
+```{r}
+vehicle <- vehicle |>
+  mutate(
+    altura_clasificada = case_when(
+      #IA
+      as.numeric(sub("^(\\d+)-.*", "\\1", height_range)) <= 1500 ~ "altura_pequeña",
+      as.numeric(sub("^(\\d+)-.*", "\\1", height_range)) > 1500 & 
+      as.numeric(sub(".*-(\\d+)$", "\\1", height_range)) <= 2000 ~ "altura_mediana",
+      as.numeric(sub(".*-(\\d+)$", "\\1", height_range)) > 2000 ~ "altura_grande",
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+
+Hacemos esto con length y con width:
+
+```{r}
+medidas <- vehicle |>
+  select(length_range)|>
+  distinct() |>
+  arrange(desc(length_range))
+head(medidas)
+tail(medidas)
+```
+
+Vemos que los extremos son inusuales, por lo que nos centraremos en los valores intermedios.
+
+```{r}
+vehicle <- vehicle |>
+  mutate(
+    longitud_clasificada = case_when(
+      as.numeric(sub("^(\\d+)-.*", "\\1", length_range)) <= 3000 ~ "longitud_pequeña",
+      as.numeric(sub("^(\\d+)-.*", "\\1", length_range)) > 3000 & 
+        as.numeric(sub(".*-(\\d+)$", "\\1", length_range)) <= 5000 ~ "longitud_mediana",
+      as.numeric(sub(".*-(\\d+)$", "\\1", length_range)) > 5000 ~ "longitud_grande",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+Ahora con width:
+
+```{r}
+medidas <- vehicle |>
+  select(width_range)|>
+  distinct() |>
+  arrange(desc(width_range))
+head(medidas)
+tail(medidas)
+```
+
+```{r}
+vehicle <- vehicle |>
+  mutate(
+    anchura_clasificada = case_when(
+      as.numeric(sub("^(\\d+)-.*", "\\1", width_range)) <= 1900 ~ "anchura_pequeña",
+      as.numeric(sub("^(\\d+)-.*", "\\1", width_range)) > 1900 & 
+        as.numeric(sub(".*-(\\d+)$", "\\1", width_range)) <= 2200 ~ "anchura_mediana",
+      as.numeric(sub(".*-(\\d+)$", "\\1", width_range)) > 2200 ~ "anchura_grande",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+Una vez hecho esto, podemos crear un contexto formal para explorar las relaciones entre los vehículos y los diferentes atributos.
+
+Para ello, primero debemos obtener una matriz binaria a partir de los datos de los que disponemos:
+
+```{r, results='hide'}
+library(fcaR)
+```
+
+```{r}
+
+vehicle_filtered <- vehicle |>
+  filter(!is.na(altura_clasificada) & !is.na(longitud_clasificada) & !is.na(anchura_clasificada))|>
+  sample_n(100)
+
+# Crear una matriz de relación binaria entre vehículos y atributos
+context_matrix <- vehicle_filtered |>
+  mutate(
+    # Convertir las categorías en columnas binarias
+    altura_grande = if_else(altura_clasificada == "altura_grande", 1, 0),
+    altura_mediana = if_else(altura_clasificada == "altura_mediana", 1, 0),
+    altura_pequeña = if_else(altura_clasificada == "altura_pequeña", 1, 0),
+    longitud_grande = if_else(longitud_clasificada == "longitud_grande", 1, 0),
+    longitud_mediana = if_else(longitud_clasificada == "longitud_mediana", 1, 0),
+    longitud_pequeña = if_else(longitud_clasificada == "longitud_pequeña", 1, 0),
+    anchura_grande = if_else(anchura_clasificada == "anchura_grande", 1, 0),
+    anchura_mediana = if_else(anchura_clasificada == "anchura_mediana", 1, 0),
+    anchura_pequeña = if_else(anchura_clasificada == "anchura_pequeña", 1, 0)
+  ) |>
+  select(class_bodytype, altura_grande, altura_mediana, altura_pequeña, 
+         longitud_grande, longitud_mediana, longitud_pequeña, 
+         anchura_grande, anchura_mediana, anchura_pequeña) 
+context_matrix
+```
+
+Ahora creamos el contexto formal:
+
+```{r}
+library(fcaR)
+
+context_mat <- as.matrix(context_matrix[ , -1])
+rownames(context_mat) <- context_matrix$class_bodytype
+
+fc <- FormalContext$new(context_mat)
+fc
+```
+
+Una vez obtenido el contexto formal, podemos hacer operaciones con él, como encontrar los conceptos:
+
+```{r}
+fc$find_concepts()
+conceptos <- fc$concepts
+conceptos[2]
+```
+
+Todos los vehículos del concepto mostrado tienen anchura pequeña, y además, ningún otro vehículo en el contexto tiene exactamente esa propiedad.
+
+Podemos también explorar implicaciones.
+
+```{r}
+fc$find_implications()
+implicaciones <- fc$implications
+implicaciones[2]
+```
+
+Esta implicación nos indica que siempre que un vehículo tiene anchura grande, también tiene altura grande y longitud grande.
+
+```{r}
+fc$plot()
+```
+
+Vamos a ordenar por tiempo que pasa entre que el vehículo sale de producción a que el vehículo se registra por primera vez según el class_bodytype.
+
+```{r}
+library(dplyr)
+library(lubridate)
+
+vehicle |>
+  mutate(
+    date_technical_approval = ymd(date_technical_approval),
+    date_of_first_registration = ymd(date_of_first_registration),
+    dias_espera = as.numeric(date_of_first_registration - date_technical_approval)
+  ) |>
+  # Filtramos casos válidos
+  filter(!is.na(dias_espera)) |>
+  group_by(class_bodytype) |>
+  summarise(media_dias_espera = mean(dias_espera, na.rm = TRUE)) |>
+  arrange(desc(media_dias_espera))
+```
+
+Podemos observar que hay valores demasiado altos, como el SLR_class_convertible, lo cual se puede deber a que el vehículo haya estado parado en un concesionario, a retrasos...
+
+Vamos a observar ahora el porcentaje de coches que no han llegado a ser registrados por tipo.
+
+```{r}
+library(dplyr)
+library(lubridate)
+
+vehicle |>
+  group_by(class_bodytype) |>
+  summarise(
+    total=n(),
+    num_na = sum(is.na(ymd(date_of_first_registration))),
+    porcentaje_na = round(100*num_na / total, 2)
+  ) |>
+  arrange(desc(porcentaje_na))
+```
+
+Vemos que hay tipos que destacan por su cantidad de vehículos sin registrar. Si observamos sus fechas de aprobación técnica, vemos que no son vehículos recientes, es decir, no hay indicios de que acaben de terminar de producirse. Por tanto, puede deberse a que son vehículos con fallos técnicos graves o retirados del mercado, ya que errores en la entrada de datos resultaría raro al tratarse de un porcentaje tan alto.
+
+## Outliers
+
+Ahora vamos a tratar los valores extremos que no tienen sentido, por lo que los consideramos errores y los eliminamos. Por ejemplo, vamos a observar la columna damage_mileage del dataset damage usando percentiles.
+
+Lo que haremos será eliminar los valores extremadamente altos, pues un coche con millones de kilómetros no tendría sentido. Sin embargo, es posible que los coches tengan un kilometraje extremadamente bajo. Por tanto, filtraremos los valores menores a los extremadamente altos, modificando el dataset original.
+
+```{r}
+
+percentil_99 <- quantile(damage$damage_mileage, probs = 0.99, na.rm = TRUE)
+
+damage <- damage |> 
+  filter(damage$damage_mileage <= percentil_99)
+
+```
+
+```{r, results='hide'}
+library(readr)
+
+# Guardar los datasets modificados
+write_csv(wishlist, "data/wishlist1_modificado.csv")
+write_csv(customer_vehicle, "data/customer_vehicle1_modificado.csv")
+write_csv(vehicle, "data/vehicle1_modificado.csv")
+write_csv(damage, "data/damage1_modificado.csv")
+```

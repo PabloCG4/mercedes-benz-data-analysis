@@ -1,0 +1,28 @@
+---
+title: "Conclusiones y propuestas"
+format: html
+---
+
+## Conclusiones
+
+A lo largo de este análisis, hemos trabajado con múltiples fuentes de datos que nos han permitido entender mejor la relación entre los clientes, sus vehículos, las listas de deseos y los registros de daños. Este enfoque ha sido clave para extraer información valiosa y generar nuevas perspectivas.
+
+Una de las primeras tareas fue integrar la información dispersa en distintas tablas (customer_vehicle, damage, wishlist, vehicle). Al combinar estos datos, conseguimos construir una base más rica y completa, que nos permitió analizar el comportamiento de los clientes de forma más precisa.
+
+Posteriormente, creamos variables nuevas como el número total de visitas al taller (total_workshop_visits), una categorización del kilometraje al momento del daño (damage_mileage_category) y la fecha de última modificación de la wishlist (last_stock_update). Estas variables añadieron contexto útil sobre el estado del vehículo y el momento en el que el cliente podría estar considerando una recompra.
+
+En cuanto a los valores faltantes, aplicamos distintas estrategias de imputación. Por ejemplo, para estimar fechas ausentes como next_repurchase_date, utilizamos modelos de regresión y también recurrimos a fechas derivadas de la wishlist. Además, empleamos funciones como %m+% months(1) para calcular fechas estimadas de forma más coherente con la lógica del negocio.
+
+En la parte de modelado predictivo, optamos por usar un modelo basado en árboles de decisión (rpart) para anticipar el tipo de carrocería que un cliente podría preferir en su próximo vehículo. Este modelo se construyó utilizando variables como las dimensiones clasificadas del vehículo, la categoría de kilometraje por daño y la cantidad de visitas al taller.
+
+Finalmente, también realizamos un análisis de valores atípicos en el kilometraje registrado en los daños (damage_mileage). En lugar de eliminar datos bajos que podrían ser válidos, como vehículos casi nuevos, nos centramos únicamente en excluir aquellos con valores excepcionalmente altos, identificados a través de percentiles, para no afectar la calidad de los modelos.
+
+## Propuestas
+
+En cuanto a los próximos pasos:
+
+Explorar variables adicionales: incluir datos relacionados con la situación económica del cliente, el tipo de uso que le da al vehículo o su historial de financiación podría ayudar a mejorar la capacidad predictiva del modelo.
+
+Segmentación de clientes: aplicar técnicas de clustering o segmentación para identificar grupos con comportamientos similares (por ejemplo, en número de visitas al taller, tipo de daño o preferencias de carrocería) podría aportar valor añadido para estrategias personalizadas.
+
+Validación con decisiones futuras reales: si se dispone de datos históricos o a futuro sobre compras efectivas, validar el rendimiento del modelo rpart frente a estas decisiones reales permitiría ajustar sus parámetros y aumentar su fiabilidad en entornos productivos.
